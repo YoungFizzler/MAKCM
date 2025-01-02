@@ -10,6 +10,8 @@
 #include <atomic>
 #include <mutex>
 #include <RingBuf.h>
+#include <map>
+#include <vector>
 
 // Atomic variables for mouse movement and button states
 std::atomic<int> moveX(0);
@@ -59,45 +61,61 @@ const char *commandQueue[] = {
 
 // Command tables
 CommandEntry serial0CommandTable[] = {
-    {"DEBUG_", handleDebug},
-    {"SERIAL_", handleSerial0Speed}
+    {"DEBUG_", handleDebug},         // Handle debug commands and logging levels
+    {"SERIAL_", handleSerial0Speed}  // Change serial port speed (115200-5000000)
 };
 
 CommandEntry debugCommandTable[] = {
-    {"ESPLOG_", handleEspLog},
-    {"PRINT_Parsed_Descriptors", printParsedDescriptors},
-    {"HID_Descriptors", [](const char* arg) { Serial1.print(arg); }}
+    {"ESPLOG_", handleEspLog},                    // Log messages to Serial0
+    {"PRINT_Parsed_Descriptors", printParsedDescriptors}, // Print USB descriptor info
+    {"HID_Descriptors", [](const char* arg) { Serial1.print(arg); }} // Print HID descriptor data
 };
 
+// Recoil table structure
+struct RecoilPattern {
+    std::vector<int> pattern;  // Format: x, y, delay, x, y, delay, ...
+    String name;
+};
+
+// Store recoil patterns
+std::map<String, RecoilPattern> recoilPatterns;
+
 CommandEntry normalCommandTable[] = {
-    {"km.moveto", handleKmMoveto},
-    {"km.getpos", handleKmGetpos},
-    {"km.left(1)", handleKmMouseButtonLeft1},
-    {"km.left(0)", handleKmMouseButtonLeft0},
-    {"km.right(1)", handleKmMouseButtonRight1},
-    {"km.right(0)", handleKmMouseButtonRight0},
-    {"km.middle(1)", handleKmMouseButtonMiddle1},
-    {"km.middle(0)", handleKmMouseButtonMiddle0},
-    {"km.side1(1)", handleKmMouseButtonForward1},
-    {"km.side1(0)", handleKmMouseButtonForward0},
-    {"km.side2(1)", handleKmMouseButtonBackward1},
-    {"km.side2(0)", handleKmMouseButtonBackward0},
-    {"km.wheel", handleKmWheel}
+    {"nozen.moveto", handleKmMoveto},        // Move mouse to absolute x,y coordinates
+    {"nozen.getpos", handleKmGetpos},        // Get current mouse position
+    {"nozen.left(1)", handleKmMouseButtonLeft1},    // Press left mouse button
+    {"nozen.left(0)", handleKmMouseButtonLeft0},    // Release left mouse button
+    {"nozen.right(1)", handleKmMouseButtonRight1},  // Press right mouse button
+    {"nozen.right(0)", handleKmMouseButtonRight0},  // Release right mouse button
+    {"nozen.middle(1)", handleKmMouseButtonMiddle1},// Press middle mouse button
+    {"nozen.middle(0)", handleKmMouseButtonMiddle0},// Release middle mouse button
+    {"nozen.side1(1)", handleKmMouseButtonForward1},// Press forward side button
+    {"nozen.side1(0)", handleKmMouseButtonForward0},// Release forward side button
+    {"nozen.side2(1)", handleKmMouseButtonBackward1},// Press back side button
+    {"nozen.side2(0)", handleKmMouseButtonBackward0},// Release back side button
+    {"nozen.wheel", handleKmWheel},          // Mouse wheel movement
+    {"nozen.recoil.add", handleRecoilAdd},   // Add new recoil pattern: name{x,y,delay,...}
+    {"nozen.recoil.delete", handleRecoilDelete}, // Delete a recoil pattern by name
+    {"nozen.recoil.list", handleRecoilList}, // List all recoil patterns with full data
+    {"nozen.recoil.get", handleRecoilGet},   // Get a specific recoil pattern by name
+    {"nozen.recoil.names", handleRecoilNames},// List only the names of stored patterns
+    {"nozen.print", handlePrint},            // Print a message to Serial0
+    {"nozen.restart", handleRestart}         // Restart both ESPs
 };
 
 CommandEntry usbCommandTable[] = {
-    {"USB_HELLO", handleUsbHello},
-    {"USB_GOODBYE", handleUsbGoodbye},
-    {"USB_ISNULL", handleNoDevice},
-    {"USB_sendDeviceInfo:", receiveDeviceInfo},
-    {"USB_sendDescriptorDevice:", receiveDescriptorDevice},
-    {"USB_sendEndpointDescriptors:", receiveEndpointDescriptors},
-    {"USB_sendInterfaceDescriptors:", receiveInterfaceDescriptors},
-    {"USB_sendHidDescriptors:", receiveHidDescriptors},
-    {"USB_sendIADescriptors:", receiveIADescriptors},
-    {"USB_sendEndpointData:", receiveEndpointData},
-    {"USB_sendUnknownDescriptors:", receiveUnknownDescriptors},
-    {"USB_sendDescriptorconfig:", receivedescriptorConfiguration}
+    {"USB_HELLO", handleUsbHello},           // Initialize USB connection
+    {"USB_GOODBYE", handleUsbGoodbye},       // Clean disconnect of USB device
+    {"USB_ISNULL", handleNoDevice},          // Handle no device connected state
+    {"USB_sendDeviceInfo:", receiveDeviceInfo}, // Receive USB device information
+    {"USB_sendDescriptorDevice:", receiveDescriptorDevice}, // Receive device descriptor
+    {"USB_sendEndpointDescriptors:", receiveEndpointDescriptors}, // Receive endpoint info
+    {"USB_sendInterfaceDescriptors:", receiveInterfaceDescriptors}, // Receive interface info
+    {"USB_sendHidDescriptors:", receiveHidDescriptors}, // Receive HID descriptor data
+    {"USB_sendIADescriptors:", receiveIADescriptors}, // Receive interface association data
+    {"USB_sendEndpointData:", receiveEndpointData}, // Receive endpoint specific data
+    {"USB_sendUnknownDescriptors:", receiveUnknownDescriptors}, // Handle unknown descriptors
+    {"USB_sendDescriptorconfig:", receivedescriptorConfiguration} // Receive config descriptor
 };
 
 void processCommand(const char *command);
@@ -136,7 +154,7 @@ void serial0RX() {
 
             trimCommand(commandBuffer);
 
-            if (strncmp(commandBuffer, "km.move", 7) == 0) {
+            if (strncmp(commandBuffer, "nozen.move", 10) == 0) {
                 if (!kmMoveCom) {
                     kmMoveCom = true;
                     handleKmMoveCommand(commandBuffer);
@@ -174,7 +192,7 @@ void serial1RX() {
 
             trimCommand(commandBuffer);
 
-            if (strncmp(commandBuffer, "km.move", 7) == 0 && !kmMoveCom) {
+            if (strncmp(commandBuffer, "nozen.move", 10) == 0 && !kmMoveCom) {
                 handleKmMoveCommand(commandBuffer);
             } else {
                 processCommand(commandBuffer);
@@ -219,7 +237,7 @@ void processRingBufferCommand(RingBuf<char, 620> &buffer) {
 void handleKmMoveCommand(const char *command) {
     int x, y;
 
-    sscanf(command + strlen("km.move") + 1, "%d,%d", &x, &y);
+    sscanf(command + strlen("nozen.move") + 1, "%d,%d", &x, &y);
 
     {
         std::lock_guard<std::mutex> lock(commandMutex);
@@ -398,7 +416,7 @@ void mouseMoveTask(void *pvParameters) {
 
 void handleKmMoveto(const char *command) {
     int x, y;
-    sscanf(command + strlen("km.moveto") + 1, "%d,%d", &x, &y);
+    sscanf(command + strlen("nozen.moveto") + 1, "%d,%d", &x, &y);
     handleMoveto(x, y);
 }
 
@@ -468,7 +486,7 @@ void handleKmMouseButtonBackward0(const char *command) {
 
 void handleKmWheel(const char *command) {
     int wheelMovement;
-    sscanf(command + strlen("km.wheel") + 1, "%d", &wheelMovement);
+    sscanf(command + strlen("nozen.wheel") + 1, "%d", &wheelMovement);
     handleMouseWheel(wheelMovement);
 }
 
@@ -497,4 +515,115 @@ void handleMouseWheel(int wheelMovement) {
 
 void handleGetPos() {
     Serial0.println("km.pos(" + String(mouseX) + "," + String(mouseY) + ")");
+}
+
+void handleRecoilAdd(const char *command) {
+    // Format: nozen.recoil.add(name){x,y,delay,x,y,delay,...}
+    char name[32];
+    char pattern[256];
+    
+    if (sscanf(command + strlen("nozen.recoil.add"), "(%[^)]){%[^}]}", name, pattern) == 2) {
+        RecoilPattern newPattern;
+        newPattern.name = String(name);
+        
+        // Parse the pattern string
+        char *token = strtok(pattern, ",");
+        while (token != NULL) {
+            newPattern.pattern.push_back(atoi(token));
+            token = strtok(NULL, ",");
+        }
+        
+        // Validate pattern (must be multiple of 3: x,y,delay)
+        if (newPattern.pattern.size() % 3 == 0) {
+            recoilPatterns[newPattern.name] = newPattern;
+            Serial0.println("Recoil pattern added: " + newPattern.name);
+        } else {
+            Serial0.println("Invalid pattern format. Must be x,y,delay triplets");
+        }
+    } else {
+        Serial0.println("Invalid command format. Use: nozen.recoil.add(name){x,y,delay,x,y,delay,...}");
+    }
+}
+
+void handleRecoilDelete(const char *command) {
+    // Format: nozen.recoil.delete(name)
+    char name[32];
+    
+    if (sscanf(command + strlen("nozen.recoil.delete"), "(%[^)])", name) == 1) {
+        String patternName = String(name);
+        if (recoilPatterns.erase(patternName) > 0) {
+            Serial0.println("Recoil pattern deleted: " + patternName);
+        } else {
+            Serial0.println("Pattern not found: " + patternName);
+        }
+    } else {
+        Serial0.println("Invalid command format. Use: nozen.recoil.delete(name)");
+    }
+}
+
+void handleRecoilList(const char *command) {
+    Serial0.println("Stored recoil patterns:");
+    for (const auto &pattern : recoilPatterns) {
+        Serial0.print(pattern.first + ": {");
+        for (size_t i = 0; i < pattern.second.pattern.size(); i++) {
+            Serial0.print(pattern.second.pattern[i]);
+            if (i < pattern.second.pattern.size() - 1) {
+                Serial0.print(",");
+            }
+        }
+        Serial0.println("}");
+    }
+}
+
+void handleRecoilGet(const char *command) {
+    // Format: nozen.recoil.get(name)
+    char name[32];
+    
+    if (sscanf(command + strlen("nozen.recoil.get"), "(%[^)])", name) == 1) {
+        String patternName = String(name);
+        auto it = recoilPatterns.find(patternName);
+        
+        if (it != recoilPatterns.end()) {
+            Serial0.print(it->first + ": {");
+            for (size_t i = 0; i < it->second.pattern.size(); i++) {
+                Serial0.print(it->second.pattern[i]);
+                if (i < it->second.pattern.size() - 1) {
+                    Serial0.print(",");
+                }
+            }
+            Serial0.println("}");
+        } else {
+            Serial0.println("Pattern not found: " + patternName);
+        }
+    } else {
+        Serial0.println("Invalid command format. Use: nozen.recoil.get(name)");
+    }
+}
+
+void handleRecoilNames(const char *command) {
+    Serial0.println("Available recoil patterns:");
+    for (const auto &pattern : recoilPatterns) {
+        Serial0.println("- " + pattern.first);
+    }
+}
+
+void handlePrint(const char *command) {
+    // Format: nozen.print(message)
+    char message[256];
+    
+    if (sscanf(command + strlen("nozen.print"), "(%[^)])", message) == 1) {
+        Serial0.println(message);
+    } else {
+        Serial0.println("Invalid command format. Use: nozen.print(message)");
+    }
+}
+
+void handleRestart(const char *command) {
+    Serial0.println("Restarting both ESPs...");
+    // Signal the other ESP to restart
+    Serial1.println("RESTART");
+    // Wait a bit for the message to be sent
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+    // Restart this ESP
+    ESP.restart();
 }
